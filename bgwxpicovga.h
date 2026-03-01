@@ -411,8 +411,6 @@ static inline void raw_scanline_finish(struct scanvideo_scanline_buffer *dest) {
   dest->status = SCANLINE_OK;
 }
 
-static uint16_t framebuffer[320 * 240];
-
 // void bgwxpicovga::prepareBuffer(struct scanvideo_scanline_buffer *vga_out, uint16_t *pixel_buffer_input) {
 //   uint32_t *prepare;
 //   raw_scanline_prepare(*prepare, VGA_MODE.width);
@@ -1008,21 +1006,22 @@ void bgwxpicovga::sendUserBuffer(const uint16_t *buff, int buf_len) {
 //   return 0;
 // }
 void bgwxpicovga::frame_update_logic() {
-  // TODO: Implement frame_update_logic logic
   if (!params_ready) {
-    // ... Mandelbrot parameter math ...
     params_ready = true;
   }
-  lineCallback(getScanline());
-  frameCallback(getFrame());
+  if (lineCallback) {
+    lineCallback(getScanline());
+  }
+  if (frameCallback) {
+    frameCallback(getFrame());
+  }
 }
 
 uint16_t *bgwxpicovga::raw_scanline_prepare(struct scanvideo_scanline_buffer *dest, uint width) {
-  // TODO: Implement raw_scanline_prepare logic
-  return nullptr;
+  return ::raw_scanline_prepare(dest, width);
 }
 void bgwxpicovga::raw_scanline_finish(struct scanvideo_scanline_buffer *dest) {
-  // TODO: Implement raw_scanline_finish logic
+  ::raw_scanline_finish(dest);
 }
 void bgwxpicovga::flash_bulk_read(uint32_t *rxbuf, uint32_t flash_offs, size_t len, uint dma_chan) {
   // TODO: Implement flash_bulk_read logic
@@ -1270,8 +1269,9 @@ static inline fixed fixed_mult(fixed a, fixed b) { return a * b; }
 #endif
 // bgwxpicovga member function implementation
 void bgwxpicovga::m_fillFramebufferWithColor(uint16_t color) {
-  for (int i = 0; i < FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT; ++i) {
-    m_user_framebuffer[i] = color;
+  uint16_t *fb = &framebuffer[0][0];
+  for (int i = 0; i < FRAMEBUFFER_DOUBLE_WIDTH * FRAMEBUFFER_DOUBLE_HEIGHT; ++i) {
+    fb[i] = color;
   }
 }
 
@@ -1290,41 +1290,26 @@ void bgwxpicovga::colorSet(uint8_t red_set, uint8_t green_set, uint8_t blue_set)
 }
 // void bgwxpicovga::m_fillScanlineBuffer(struct scanvideo_scanline_buffer *buffer) {
 void bgwxpicovga::timer_send_buffer(struct scanvideo_scanline_buffer *buffer) {
-  SPAM_GUARD_PRINT("timer_send_buffer !");
-  // Constants and input variables
-  // struct scanvideo_scanline_buffer *buffer = scanvideo_begin_scanline_generation(true);
-  static uint32_t postamble[] = { 0x0000u | (COMPOSABLE_EOL_ALIGN << 16) };
-  uint line_number = scanvideo_scanline_number(buffer->scanline_id);  // Current scanline number (input)
-  if (fb_count_send < SCREEN_WIDTH) {
-    // // Define color values based on the scanline number
-    SPAM_GUARD_PRINT("fb_count_send: ");
-    SerialDbg.print(fb_count_send);
+  // Map VGA scanline to framebuffer row (each framebuffer row is displayed twice
+  // for pixel doubling: 320x240 framebuffer -> 640x480 VGA output)
+  uint line = scanvideo_scanline_number(buffer->scanline_id);
+  int fb_y = (int)(line / 2);
+  if (fb_y < 0) fb_y = 0;
+  if (fb_y >= FRAMEBUFFER_DOUBLE_HEIGHT) fb_y = FRAMEBUFFER_DOUBLE_HEIGHT - 1;
+  uint16_t *pixels = framebuffer[fb_y];
 
-    uint16_t background_color = getRGB(0, 0, 0);  // Varies the red component
-    // uint8_t red = line_number % 256;          // Varies the red component
-    // uint8_t green = (line_number * 2) % 256;  // Varies the green component
-    // uint8_t blue = (line_number * 3) % 256;   // Varies the blue component
-
-    // Set up the video scanline buffer
-    buffer->data[0] = 4;                                    // First element informs the PIO engine of the start
-    buffer->data[1] = host_safe_hw_ptr(buffer->data + 8);   // Pointer to pixel data
-    buffer->data[2] = 158;                                  // Main scanline run length (pixels - first 4 handled separately)
-    buffer->data[3] = host_safe_hw_ptr(&background_color);  // Pointer to the main "fill color"
-    buffer->data[4] = count_of(postamble);                  // Number of postamble words
-    buffer->data[5] = host_safe_hw_ptr(postamble);          // Pointer to postamble
-    buffer->data[6] = 0;                                    // Reserved for alignment
-    buffer->data[7] = 0;                                    // Reserved for alignment
-    buffer->data_used = 8;
-
-    // Fill first few pixels with gradient
-    buffer->data[8] = (m_user_framebuffer[fb_count_send] << 16u) | COMPOSABLE_RAW_RUN;
-    buffer->data[9] = ((fb_count_send + 1) << 16u) | 0;
-    buffer->data[10] = (COMPOSABLE_RAW_RUN << 16u) | (fb_count_send + 2);
-    // Fill the remaining pixels with the unified full scanline "gradient" color
-    buffer->data[11] = ((317 + 1 - 3) << 16u) | background_color;  // Remaining pixels to be filled
+  // Use the raw scanline approach (ported from Mandelbrot timing structure):
+  // raw_scanline_prepare sets up a COMPOSABLE_RAW_RUN covering FRAMEBUFFER_WIDTH
+  // pixels and returns a uint16_t pointer where we write pixel data directly.
+  uint16_t *buf = ::raw_scanline_prepare(buffer, FRAMEBUFFER_WIDTH);
+  for (int x = 0; x < FRAMEBUFFER_WIDTH; ++x) {
+    // Read from the 320-wide framebuffer at half the x-coordinate to achieve
+    // 2x horizontal scaling (each framebuffer pixel maps to 2 VGA pixels).
+    buf[x] = pixels[x / 2];
   }
-
-  // scanvideo_end_scanline_generation(buffer);
+  // raw_scanline_finish pivots the first two words for the PIO state machine
+  // and marks the scanline ready — this is the timing-critical step.
+  ::raw_scanline_finish(buffer);
 }
 // static inline void source_m_fillscanline_buffer(struct scanvideo_scanline_buffer *m_buffer) {
 //     static uint32_t postamble[] = {0x0000u | (COMPOSABLE_EOL_ALIGN << 16)};
@@ -1377,24 +1362,25 @@ void bgwxpicovga::render_loop() {
   int core_num = get_core_num();
   printf("Rendering on core %d\n", core_num);
   while (true) {
-
     mutex_enter_blocking(&frame_mutex);
-    // tester();
-    // m_scanline(m_user_framebuffer, m_user_framebuffer_len);
-    if (y == VGA_MODE.height) {
+    // When all rows of the framebuffer have been filled, reset for next frame
+    if (y == FRAMEBUFFER_DOUBLE_HEIGHT) {
       params_ready = false;
       frame_update_logic();
       y = 0;
     }
-    y++;
-    // fixed _x0 = x0, _y0 = y0;
-    // fixed _dx0_dx = dx0_dx, _dy0_dy = dy0_dy;
+    uint _y = y++;
     mutex_exit(&frame_mutex);
-    //  scanline(framebuffer, 320, _x0, _y0 + _dy0_dy * _y, _dx0_dx);
-    // scanline(framebuffer, 320, _x0, _y0 + _dy0_dy * _y, _dx0_dx);
 
-    // timer_send_buffer(m_user_framebuffer, m_user_framebuffer_len);
+    // Fill framebuffer row _y with custom user data.
+    // If a buffer callback is registered, call it to let the user write pixels
+    // into the row. Otherwise the row stays black (zeroed at startup).
+    if (bufferCallbackFn) {
+      bufferCallbackFn(framebuffer[_y], (int)_y);
+    }
+
 #if !PICO_ON_DEVICE
+    // On non-device (simulator): drive scanlines directly from render_loop
     struct scanvideo_scanline_buffer *buffer = scanvideo_begin_scanline_generation(true);
     timer_send_buffer(buffer);
     scanvideo_end_scanline_generation(buffer);
