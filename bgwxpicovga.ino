@@ -35,6 +35,8 @@ do {
 #define SCREEN_HEIGHT 480
 #define VGA_CORE 0
 #include "bgwxpicovga.h"
+// Include the mandlebuffer structure
+#include "mandlebuffer.h"
 //  set_sys_clock_khz(200000, true); ??
 
 /*
@@ -126,6 +128,19 @@ uint16_t tx_buffer[SCREEN_WIDTH];
 // This function will be called for each scanline that needs to be rendered
 // You can implement your scanline rendering logic here, using the provided
 // buffer and scanline information.
+
+// Implementation of generate_scanline for framebuffer_vga
+// This is where you customize the framebuffer content per scanline
+extern "C" void generate_scanline(uint16_t *line_buffer, uint length, uint y) {
+  // Example: fill with a color gradient based on y
+  for (uint x = 0; x < length; ++x) {
+    // Simple color pattern: vertical gradient
+    uint8_t r = (y * 255) / SCREEN_HEIGHT;
+    uint8_t g = (x * 255) / SCREEN_WIDTH;
+    uint8_t b = 128;
+    line_buffer[x] = PICO_SCANVIDEO_PIXEL_FROM_RGB8(r, g, b);
+  }
+}
 
 void buffer_poll() {
   if (fill_new_buffer_count >= SCREEN_WIDTH) {
@@ -291,9 +306,10 @@ void setup() {
   SerialDbg.print("[CORE 0] Starting VGA on core: ");
   SerialDbg.println("#0");
   delay(2500);
-  // Register the custom buffer callback so render_loop() fills each
-  // framebuffer row by calling myBufferCallback() instead of Mandelbrot math.
-  VGA.setBufferCallback(myBufferCallback);
+  // VGA.setBufferCallback(myBufferCallback);
+  // VGA.setFrameCallback(myFrameCallback);
+  // VGA.setLineCallback(myLineCallback);
+  framebuffer_vga_init();
   VGA.begin();
   // }
 }
