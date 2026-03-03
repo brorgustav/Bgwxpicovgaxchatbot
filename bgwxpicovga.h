@@ -63,6 +63,7 @@ public:
   // Current framebuffer row being rendered (shared between cores under mutex).
   static uint y;
 
+  uint32_t last_frame_num = 0;
   mutex_t frame_mutex;
   bool params_ready;
   bool core_0_started;
@@ -72,6 +73,12 @@ public:
 
   // Main rendering loop: fills each framebuffer row via bufferCallbackFn.
   void render_loop();
+  // Convenience wrappers: call render_loop() forever on Core 0 / Core 1.
+  void loopCore0();
+  void loopCore1();
+  // Self-contained rendering loop: generates a per-scanline colour gradient
+  // directly. No callback setup required. Call from loop() or loop1().
+  void minimal_loop_backup();
 
   // User framebuffer pointer (set via m_framebuffer_store).
   uint16_t *m_user_framebuffer;
@@ -115,6 +122,8 @@ uint bgwxpicovga::y = 0;
 #ifdef FRAMEBUFFER_DOUBLE
 #include "framebuffer_vga.h"
 #endif
+
+#define MIN_COLOR_RUN 3
 
 #include "hardware/clocks.h"
 #include "pico/multicore.h"
@@ -188,7 +197,7 @@ void bgwxpicovga::begin_core_0() {
   uint base_freq;
 #if !ALARM_POOL_ON_CORE1
 #if PICO_ON_DEVICE
-  add_alarm_in_us(100, m_timerCallback, NULL, true);
+  add_alarm_in_us(100, m_timerCallback, this, true);
 #endif
 #endif
 #if PICO_SCANVIDEO_48MHZ
@@ -222,7 +231,7 @@ void bgwxpicovga::begin_core_1() {
   SerialDbg.println("");
 #if ALARM_POOL_ON_CORE1
 #if PICO_ON_DEVICE
-  alarm_pool_add_alarm_in_us(alarm_pool_create(0, 3), 100, m_timerCallback, NULL, true);
+  alarm_pool_add_alarm_in_us(alarm_pool_create(0, 3), 100, m_timerCallback, this, true);
 #endif
 #endif
 }
@@ -311,6 +320,55 @@ void bgwxpicovga::render_loop() {
     timer_send_buffer(buffer);
     scanvideo_end_scanline_generation(buffer);
 #endif
+  }
+}
+
+// Runs render_loop() forever on Core 0.
+void bgwxpicovga::loopCore0() {
+  while (true) {
+    render_loop();
+  }
+}
+
+// Runs render_loop() forever on Core 1 (only when DUAL_CORE is enabled).
+void bgwxpicovga::loopCore1() {
+#if DUAL_CORE
+  while (true) {
+    render_loop();
+  }
+#endif
+}
+
+// Self-contained rendering loop that generates a per-scanline colour gradient
+// and pushes it directly to the VGA engine. No callback setup is required.
+// Call this from loop() or loop1() to verify the VGA output pipeline.
+void bgwxpicovga::minimal_loop_backup() {
+  int width = VGA_MODE.width;
+  while (true) {
+    struct scanvideo_scanline_buffer *scanline_buffer = scanvideo_begin_scanline_generation(true);
+    mutex_enter_blocking(&frame_mutex);
+    uint32_t frame_num = scanvideo_frame_number(scanline_buffer->scanline_id);
+    if (frame_num != last_frame_num) {
+      last_frame_num = frame_num;
+      frame_update_logic();
+    }
+    mutex_exit(&frame_mutex);
+    struct scanvideo_scanline_buffer *dest = scanline_buffer;
+    uint32_t *buf = dest->data;
+    size_t buf_length = dest->data_max;
+    int line_number = scanvideo_scanline_number(dest->scanline_id);
+    // Scale line number into a 16-bit color range (×4 so 0–479 spans 0–1916).
+    uint32_t pixel_output = (uint16_t)line_number << 2;
+    assert(buf_length >= 2);
+    assert(width >= MIN_COLOR_RUN);
+    // Composable scanline format: colour runs pack the pixel value in the upper
+    // 16 bits and the opcode/count in the lower 16 bits (see composable_scanline.h).
+    buf[0] = COMPOSABLE_COLOR_RUN | (pixel_output << 16);
+    buf[1] = (width - MIN_COLOR_RUN) | (COMPOSABLE_RAW_1P << 16);
+    buf[2] = 0 | (COMPOSABLE_EOL_ALIGN << 16);
+    dest->data_used = 3;
+    dest->status = SCANLINE_OK;
+    scanvideo_end_scanline_generation(scanline_buffer);
   }
 }
 
