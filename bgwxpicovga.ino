@@ -194,25 +194,15 @@ static uint16_t scanline_buffers[2][SCREEN_WIDTH];
 static int next_scanline_idx = 0;
 
 void myBufferCallback(uint16_t *colour_buf, int scanline) {
-
-  char buf[128];
-  snprintf(buf, sizeof(buf), "myBufferCallback: scanline=%d", scanline);
-  SPAM_GUARD_PRINT(buf);
-  core1_callback = true;
-  // tempbuffer_test();
-  // // Use the pre-filled buffer for this scanline
-  // memcpy(colour_buf, scanline_buffers[next_scanline_idx],
-  //        sizeof(scanline_buffers[0]));
-
-  // // Prepare the next scanline in the background
-  // int next_scanline = scanline + 1;
-  // int fill_idx = 1 - next_scanline_idx;
-  // for (int x = 0; x < SCREEN_WIDTH; ++x) {
-  //   scanline_buffers[fill_idx][x] = VGA.getRGB(x % 256, next_scanline % 256,
-  //   0);
-  // }
-  // // Swap buffers for next callback
-  // next_scanline_idx = fill_idx;
+  // Fill this framebuffer row (320 pixels wide, for FRAMEBUFFER_DOUBLE mode)
+  // with custom pixel data. Each pixel here maps to 2x2 on the 640x480 display.
+  // Replace this with your own image data, palette lookup, or other logic.
+  for (int x = 0; x < FRAMEBUFFER_DOUBLE_WIDTH; ++x) {
+    uint8_t r = (uint8_t)(x % 256);
+    uint8_t g = (uint8_t)(scanline % 256);
+    uint8_t b = (uint8_t)((x + scanline) % 256);
+    colour_buf[x] = PICO_SCANVIDEO_PIXEL_FROM_RGB8(r, g, b);
+  }
 }
 
 // Placeholder for sending a VGA color (not used in this example)
